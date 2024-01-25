@@ -1,0 +1,54 @@
+minRunners: 0
+
+# If you need to do maintaince or drain a group of runners, update the
+# runner group with maxRunners: 0 and let the pending jobs finish.
+#
+# When omitted entirely, the maximum number of runners is limited by the number
+# of nodes kubernetes can create.
+#
+# While that keeps the limit better in-step with resource allocation limits
+# it may make scheduling harder when there are more than one cluster involved.
+# maxRunners: 4
+
+# This runner group name must be unique and must already exist in the LLVM
+# organization. The github app keyfiles have sufficient permission to use the
+# github API's to create these runner group names.
+
+runnerGroup: grover-runners-32
+
+template:
+  spec:
+    # Uncomment this if you want to target a specific node pool with the
+    # labels used below. You can also use a different taint/toleration to
+    # target different groups.
+    #
+    #nodeSelector:
+    #  libcxx/kind: "c2-standard-30"
+    tolerations:
+      - key: "runner"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+    securityContext:
+      fsGroup: 123
+    containers:
+      - name: runner
+        image: ghcr.io/libcxx/actions-builder:live
+        command: ["/home/runner/run.sh"]
+        env:
+        - name: ACTIONS_RUNNER_CONTAINER_HOOKS
+          value: /home/runner/k8s/index.js
+        - name: ACTIONS_RUNNER_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+          value: "false"
+        volumeMounts:
+        - name: work
+          mountPath: /home/runner/_work
+    volumes:
+    - name: work
+      emptyDir:
+        medium: Memory
+

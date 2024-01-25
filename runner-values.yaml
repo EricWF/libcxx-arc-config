@@ -1,0 +1,8 @@
+# Also use a unique namespace for each runner group.
+controllerServiceAccount:
+  namespace: grover-systems
+  name: grover-controller
+
+# This configures the targe repository or organization.
+githubConfigUrl: "https://github.com/llvm"
+githubConfigSecret: runner-github-app-secret-llvm
