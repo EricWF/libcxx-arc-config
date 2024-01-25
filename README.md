@@ -7,7 +7,7 @@ Before proceeding with the installation of the actions-runner-controller, you ne
 - **Helm**: Helm is a package manager for Kubernetes, which facilitates the installation and management of applications on Kubernetes clusters.
 - **kubectl**: The Kubernetes command-line tool, kubectl, allows you to run commands against Kubernetes clusters.
 - **gcloud**: The gcloud command-line interface is a tool that provides the primary CLI to Google Cloud Platform. It is used to perform a host of operations on GCP resources.
-- **gh cli**: The github `gh` cli tool for creat
+- **gh cli**: The github `gh` cli tool for creating runner groups.
 - **Taskfile**: **OPTIONAL** This is a task runner/task automation tool that leverages a file called 'Taskfile.yml' to execute common development tasks.
 
 The current configurations are stored in a private repository under the libcxx github organization.
@@ -207,7 +207,7 @@ This section gives a brief summary of each file present in this repository:
 
 
 
-### Secrets
+## Secrets
 
 You'll need a private key file, github app id, and github app installation id
 for the LLVM github runners app. The point of contact it Tom Stellard at AMD.
@@ -232,7 +232,7 @@ lifetime isn't tied to the cluster.
 :warning: **DO NOT USE THE SAME KEY FOR TWO CLUSTERS OR INSTALLATIONS**: This will cause all of the installations to break and cause a very hard to recover from configuration  error, sometimes requiring nuking of all of the clusters using that key.
 
 
-### About Failover, Rendundancy, and Machines
+## About Failover, Rendundancy, and Machines
 
 We should always run the bots in two clusters at the same time. Both
 clusters should provide the same "runner scale sets" by the same name.
@@ -250,8 +250,7 @@ We also use multiple clusters in order to provide more resources than
 are available from a single zone.
 
 
-
-### On Machine times
+## On Machine types
 
 I tested using many different machine shapes and CPU platforms. I found
 that 32 or 64 threaded builders are most economical.
@@ -270,7 +269,7 @@ We need to address this to prevent our nightly builds from never completing
 and developers having to wait a day & multiple manual restarts before submitting code.
 
 
-#### Erics Taskfile
+## Erics Taskfile
 
 Because I hate typing and remembering commands, I created a taskfile for myself.
 It may be useful as a reference. It likely will not work out of the box
