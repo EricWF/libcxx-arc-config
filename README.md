@@ -7,6 +7,7 @@ Before proceeding with the installation of the actions-runner-controller, you ne
 - **Helm**: Helm is a package manager for Kubernetes, which facilitates the installation and management of applications on Kubernetes clusters.
 - **kubectl**: The Kubernetes command-line tool, kubectl, allows you to run commands against Kubernetes clusters.
 - **gcloud**: The gcloud command-line interface is a tool that provides the primary CLI to Google Cloud Platform. It is used to perform a host of operations on GCP resources.
+- **gh cli**: The github `gh` cli tool for creat
 - **Taskfile**: **OPTIONAL** This is a task runner/task automation tool that leverages a file called 'Taskfile.yml' to execute common development tasks.
 
 The current configurations are stored in a private repository under the libcxx github organization.
@@ -15,6 +16,7 @@ The current configurations are stored in a private repository under the libcxx g
 https://github.com/libcxx/self-hosted-runners/tree/main
 
 I sent out invites to the all attendees of the meeting so they would have access.
+However the current configuration is a bit of a mess, and not ideal for teaching/learning.
 
 ## Introduction
 
@@ -36,7 +38,8 @@ All of the [relevant documentation can be found rooted here](https://docs.github
 
 Please reference the [Quickstart Guide](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners-with-actions-runner-controller/quickstart-for-actions-runner-controller)
 for instructions on deploying a manager and runner set.
- 
+
+For information about authentication see [Authenticating with Github](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners-with-actions-runner-controller/authenticating-to-the-github-api#deploying-using-personal-access-token-classic-authentication)
 
 ### Setting up the cluster
 
@@ -69,7 +72,8 @@ but here are the settings I use for setting up a new cluster manually.
                 * `Enable Nodes on Spot VMs`: YES` (VERY VERY IMPORTART!!)
               * Metadata Section:
                 * Add taint `NoSchedule` `"runner=true"`
-                * [Optional] Add labels to describe the machine type, for example: "libcxx/cpu":  "30", which we can use later.
+                * Add labels for matching the node pool:
+                    * `libcxx/kind`:  `c2-standard-30`
         * Cluster Section:
           * Automation Section:
             * `Autoscaling Profile`: `Optimize Utilization` (Maybe? Might cause preemption too often?)
@@ -99,7 +103,102 @@ kubectl create namespace $CLUSTER-runners
 kubectl create namespace $CLUSTER-systems
 ```
 
-Now we need to create the secrets we will use.
+Now we need to create the secrets we will use. Please see secrets/example.env.
+```bash
+# Defines GITHUB_APP_ID, GITHUB_INSTALLATION_ID, and GITHUB_APP_KEYFILE
+source secrets/llvm-secrets.env
+kubectl create secret generic runner-github-app-secret-llvm \
+        --namespace=$CLUSTER-runners \
+        --from-literal=github_app_id=$GITHUB_APP_ID \
+        --from-literal=github_app_installation_id=$GITHUB_INSTALLATION_ID \
+        --from-file=github_app_private_key=$GITHUB_APP_KEYFILE
+```
+
+Note: If there are issues with authentication try adding the secret to the $CLUSTER-systems namespace as well.
+
+Now we're ready to install the controller. The controller manages all of the
+runner groups, and once installed should need very little modification.
+
+### Creating runner groups
+
+Creating new runner groups sucks. First, we need to turn our github app keyfile
+into a authentication token. We can get one by running:
+
+```bash
+source secrets/llvm.env
+python3 ./get-auth-token-for-keyfile.py
+```
+
+If you fail to import `jwt` you can install the `pyjwt` package (ideally in a virtual enviroment).
+
+Extract the key from the previous command and run:
+
+```bash
+echo <KEY> | gh auth login --with-token
+```
+
+Now that we're authenticated we can use the `manage_runner_group.sh` script
+to create, delete, list, and otherwise modify the runner groups for the entire LLVM project
+(careful!)
+
+```bash
+./manage_runner_groups.sh create grover-runners-32
+```
+
+Note that we need to use the same group name declared as `runnerGroup` in `runner-32.yaml`.
+
+### Setting up the Helm Releases
+
+The URI used for the helm charts are:
+
+```bash
+export CONTROLLER_CHART=oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
+export RUNNER_CHART=oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set
+```
+
+First install the controller. The controller configuration is entirely contained within controller-values.yaml
+
+```bash
+helm install arc --namespace $CLUSTER-systems -f controller-values.yaml $CONTROLLER_CHART
+```
+
+Note: simply substitute "install" for "upgrade" to upgrade after changing the configuration files.
+
+Assuming that worked, we next install a runner group. You can have multiple
+runner groups for a single controller. See the documentation for more information.
+
+To create a runner group use the following command:
+
+Note that the installation name "libcxx-runners-8-set". This needs to match
+the name used to reference the builders in github workflows. For historical reasons, 
+the set is use today is called "libcxx-runners-8-set", but it should be renamed now that 30+ cores are used.
+
+You can have multiple clusters all provide the same installation by using the
+same installation name but a unique runner group for each cluster. 
+
+```bash
+helm install libcxx-runners-8-set  --namespace $CLUSTER-runners -f runner-values.yaml \
+  -f runner-32.yaml $RUNNER_CHART
+```
+
+
+### File Index:
+
+This section gives a brief summary of each file present in this repository:
+
+* `README.md`: See `README.md`
+* `config.env`: Variable definitions for the `grover` cluster.
+* `secrets/example.env`: The example secret file to specify the LLVM keyfile and app ids.
+
+
+#### Helm Files
+* `controller-values.yaml`: The values file for the controller helm chart
+* `runner-values.yaml`: The cluster specific values for the runner helm chart.
+* `runner-32.yaml`: The runner values specific to the machine type & runner group. Must be combined with runner-values.yaml when used with helm.
+
+#### Runner Group utils
+* `get-auth-token-for-keyfile.py`: Turns the LLVM app keyfile creds into a gh access token.
+* `manage_runner_groups.sh`: A script for adding, deleting, and modifying the runner group names to the LLVM organization.
 
 
 
@@ -135,6 +234,20 @@ lifetime isn't tied to the cluster.
 
 ### About Failover, Rendundancy, and Machines
 
+We should always run the bots in two clusters at the same time. Both
+clusters should provide the same "runner scale sets" by the same name.
+
+With that setup we have an "active-active failover", meaning both clusters
+are actively able to run jobs, and if one fails it will silently fail over
+to the other activ cluster. EACH CLUSTER NEEDS ITS OWN PRIVATE KEY.
+
+Generally it is safe to do maintenance on a single cluster at a time.
+Clusters should be drained before starting maintenance. This can be done
+by either uninstalling the runner scale sets or updating the maxRunners for them
+to be zero.
+
+We also use multiple clusters in order to provide more resources than
+are available from a single zone.
 
 
 
@@ -160,7 +273,8 @@ and developers having to wait a day & multiple manual restarts before submitting
 #### Erics Taskfile
 
 Because I hate typing and remembering commands, I created a taskfile for myself.
-It may be useful as a reference.
+It may be useful as a reference. It likely will not work out of the box
+with the configurations in this repository.
 
 ```yaml
 version: '3'
@@ -271,25 +385,29 @@ tasks:
     requires:
       vars: [ 'CMD', 'CLUSTER', 'SET', 'CHART_VERSION' ]
     vars:
-      OSET: "{{default .SET .OSET}}"
-      OVERRIDE: "{{if eq .OSET \"\"}}{{else}}-f ./clusters/{{.CLUSTER}}/runner-{{.OSET}}.yaml {{end}}"
+      DEFAULT_RUNNER_GROUP: '{{.CLUSTER}}-runners-{{.SET}}'
+      RUNNER_GROUP: '{{.RUNNER_GROUP | default .DEFAULT_RUNNER_GROUP}}'
+      INSTALLATION_NAME:
+        sh: yq -e ".runnerScaleSetName" ./clusters/{{.CLUSTER}}/runner-{{.SET}}.yaml
     cmds:
       - cmd: |-
-          helm {{.CMD}} libcxx-runners-{{.SET}}-set \
+          helm {{.CMD}} {{.INSTALLATION_NAME}} \
           --namespace {{.CLUSTER}}-runners \
           -f ./clusters/{{.CLUSTER}}/runner-values.yaml \
            -f ./clusters/{{.CLUSTER}}/runner-{{.SET}}.yaml \
-           {{.OVERRIDE}} \
-          --version "{{.CHART_VERSION}}" {{.RUNNER_CHART}} 
+          --version "{{.CHART_VERSION}}" {{.RUNNER_CHART}}
 
   uninstall-runner:
     deps: *deps
     dir: '{{.TASKFILE_DIR}}'
     requires:
       vars: [ 'CLUSTER', 'SET' ]
+    vars:
+      INSTALLATION_NAME:
+        sh: yq -e ".runnerScaleSetName" ./clusters/{{.CLUSTER}}/runner-{{.SET}}.yaml
     cmds:
       - cmd: |-
-          helm uninstall libcxx-runners-{{.SET}}-set \
+          helm uninstall {{.INSTALLATION_NAME}} \
           --namespace {{.CLUSTER}}-runners
         
 
@@ -392,6 +510,21 @@ tasks:
         --from-literal=github_app_installation_id=$GITHUB_INSTALLATION_ID \
         --from-file=github_app_private_key=$GITHUB_APP_KEYFILE
 
+  delete-secrets:
+      deps: *deps
+      dir: '{{.TASKFILE_DIR}}'
+      requires:
+        vars: ['ORG', 'CLUSTER']
+      dotenv: ['./secrets/{{.ORG}}-secrets.env']
+      precondition:
+        - cmd: |-
+            test -f {{.GITHUB_APP_KEYFILE}}
+            test -f ./secrets/{{.ORG}}-secrets.env
+      cmds:
+        - |-
+          kubectl delete secret runner-github-app-secret-{{.ORG}} -n {{.CLUSTER}}-runners || echo "No secret to delete"
+        - |-
+          kubectl delete secret runner-github-app-secret-{{.ORG}} --namespace={{.CLUSTER}}-systems  || echo "No secret to delete"
 
   connect-cluster:
     run: when_changed
@@ -411,16 +544,3 @@ tasks:
     cmds:
       - echo "No task specified"
 ```
-
-The secrets file format used by the taskfile is
-
-```
-# A github app private key & ID. Follow these instructions to create one:
-# https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners-with-actions-runner-controller/authenticating-to-the-github-api#authenticating-arc-with-a-github-app
-export GITHUB_APP_KEYFILE= # Path to the private key file
-export GITHUB_APP_ID=
-export GITHUB_INSTALLATION_ID=
-```
-
-The 
-

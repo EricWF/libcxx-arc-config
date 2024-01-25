@@ -1,5 +1,9 @@
-minRunners: 0
+# This runner group name must be unique and must already exist in the LLVM
+# organization. The github app keyfiles have sufficient permission to use the
+# github API's to create these runner group names.
+runnerGroup: grover-runners-32
 
+minRunners: 0
 # If you need to do maintaince or drain a group of runners, update the
 # runner group with maxRunners: 0 and let the pending jobs finish.
 #
@@ -8,33 +12,40 @@ minRunners: 0
 #
 # While that keeps the limit better in-step with resource allocation limits
 # it may make scheduling harder when there are more than one cluster involved.
+#
 # maxRunners: 4
 
-# This runner group name must be unique and must already exist in the LLVM
-# organization. The github app keyfiles have sufficient permission to use the
-# github API's to create these runner group names.
 
-runnerGroup: grover-runners-32
+# This must match the installation name passed to helm. For that reason
+# it's best to omit it here and simply pass it via helm cli
+#
+# runnerScaleSetName: ""
+
 
 template:
   spec:
-    # Uncomment this if you want to target a specific node pool with the
-    # labels used below. You can also use a different taint/toleration to
-    # target different groups.
-    #
-    #nodeSelector:
-    #  libcxx/kind: "c2-standard-30"
+    # Select the machine type we want using the label created on the node pool.
+    nodeSelector:
+      libcxx/kind: "c2-standard-30"
+    # Add a toleration to match the taint on the worker node pool.
     tolerations:
-      - key: "runner"
-        operator: "Equal"
-        value: "true"
-        effect: "NoSchedule"
+    - key: "runner"
+      operator: "Equal"
+      value: "true"
+      effect: "NoSchedule"
     securityContext:
       fsGroup: 123
     containers:
       - name: runner
         image: ghcr.io/libcxx/actions-builder:live
         command: ["/home/runner/run.sh"]
+        # Request enough resources to prevent kubernetes from scheduling
+        # another runner on the same pod. We can't use all the resources because
+        # ~15% are reserved by kubernetes itself.
+        resources:
+          requests:
+            cpu: "27500m"
+            memory: "48G"
         env:
         - name: ACTIONS_RUNNER_CONTAINER_HOOKS
           value: /home/runner/k8s/index.js
@@ -48,7 +59,11 @@ template:
         - name: work
           mountPath: /home/runner/_work
     volumes:
+    # GCP-ADDITIONAL-CONFIGURATION
+    # This volume specification can be omitted or changed to emptyDir in most cases.
+    # However, these gcp nodes have SSD's attached to improve bot performance
     - name: work
       emptyDir:
         medium: Memory
+        sizeLimit: "45Gi"
 
